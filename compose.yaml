@@ -14,9 +14,11 @@ services:
       - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka-0:9092,EXTERNAL://127.0.0.1:9094
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
-
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE:"false"
     volumes:
       - kafka_0_data:/bitnami/kafka
+    networks:
+      - kafka_net
 
   kafka-1:
     image: bitnami/kafka:latest
@@ -33,9 +35,11 @@ services:
       - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9095
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka-1:9092,EXTERNAL://127.0.0.1:9095
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
-
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE:"false"
     volumes:
       - kafka_1_data:/bitnami/kafka
+    networks:
+      - kafka_net
 
   kafka-2:
     image: bitnami/kafka:latest
@@ -52,8 +56,11 @@ services:
       - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9096
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka-2:9092,EXTERNAL://127.0.0.1:9096
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE:"false"
     volumes:
       - kafka_2_data:/bitnami/kafka
+    networks:
+      - kafka_net
 
   ui:
     image: provectuslabs/kafka-ui:latest
@@ -62,8 +69,88 @@ services:
     environment:
       - KAFKA_CLUSTERS_0_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
       - KAFKA_CLUSTERS_0_NAME=kraft
+    networks:
+      - kafka_net
+
+  kafka-topic-creator:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - kafka-0
+    entrypoint: /bin/bash
+    command: -c "
+      echo 'Waiting for Kafka port to be available...';
+      while ! nc -z kafka-0 9092; do
+        sleep 2;
+      done;
+      echo 'Kafka port is open, waiting for broker readiness...';
+      until /usr/bin/kafka-topics --bootstrap-server kafka-0:9092 --list; do
+        sleep 2;
+      done;
+      echo 'Kafka is ready!';
+      /usr/bin/kafka-topics --create --if-not-exists --bootstrap-server kafka-0:9092 --replication-factor 2 --partitions 3 --topic products "
+    networks:
+      - kafka_net
+
+  producer:
+    image: golang:1.24-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
+      - KAFKA_TOPIC=products
+      - CGO_ENABLED=1
+    command: sh -c "apk add --no-cache build-base librdkafka-dev && go build -tags musl -o producer ./cmd/producer && ./producer"
+    depends_on:
+      - kafka-0
+      - kafka-1
+      - kafka-2
+    restart: unless-stopped
+    networks:
+      - kafka_net
+
+  consumer-single:
+    image: golang:1.24-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
+      - KAFKA_TOPIC=products
+    command: sh -c "apk add --no-cache build-base librdkafka-dev && go build -tags musl -o consumer_single ./cmd/consumer_single && ./consumer_single"
+    depends_on:
+      - kafka-0
+      - kafka-1
+      - kafka-2
+    restart: unless-stopped
+    networks:
+      - kafka_net
+    deploy:
+      replicas: 2
+
+  consumer-batch:
+    image: golang:1.24-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092,kafka-1:9092,kafka-2:9092
+      - KAFKA_TOPIC=products
+    command: sh -c "apk add --no-cache build-base librdkafka-dev && go build -tags musl -o consumer_batch ./cmd/consumer_batch && ./consumer_batch"
+    depends_on:
+      - kafka-0
+      - kafka-1
+      - kafka-2
+    restart: unless-stopped
+    networks:
+      - kafka_net
+    deploy:
+      replicas: 2
 
 volumes:
   kafka_0_data:
   kafka_1_data:
   kafka_2_data:
+
+networks:
+  kafka_net:
